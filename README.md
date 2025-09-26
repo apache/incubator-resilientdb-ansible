@@ -12,27 +12,240 @@ with the License.  You may obtain a copy of the License at
 Unless required by applicable law or agreed to in writing,
 software distributed under the License is distributed on an
 "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-KIND, either express or implied.  See the License for the
-specific language governing permissions and limitations
-under the License.
+KIND, either express or implied.  See the specific language
+governing permissions and limitations under the License.
 -->
 
-# Resilientdb-Ansible
+# ResilientDB-Ansible
 
 Docker image to provision and run ResilientDB along with supporting services (GraphQL, Crow HTTP server, Nginx) using systemd and Ansible.
 
 ---
 
-## Quick Start
+## 📋 Prerequisites
 
-Build the Docker image:
+Before you begin, ensure you have the following installed on your system:
+
+**NOTE:** This project requires Ubuntu 20.04+
+
+- **Git:** Version control system to clone repositories
+- **Docker:** For containerized deployment
+- **cURL or Wget:** For downloading scripts
+- **Bash Shell:** To run shell scripts
+
+---
+
+## 🚀 Quick Start
+
+### Build the Docker Image
 
 ```bash
 docker build -t resilientdb-ansible .
 ```
 
-Run the container:
+### Run the Container
 
 ```bash
-docker run --privileged -v /sys/fs/cgroup:/sys/fs/cgroup:ro -p 80:80 -p 18000:18000 -p 8000:8000 resilientdb-ansible
+docker run --privileged \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
+  -v /tmp:/tmp \
+  -v /run:/run \
+  -p 80:80 \
+  -p 18000:18000 \
+  -p 8000:8000 \
+  resilientdb-ansible
 ```
+
+---
+
+## 🔧 Alternative Installation Methods
+
+### Option 1: Interactive Shell (Recommended for Troubleshooting)
+
+If the container exits with error code 255, use this approach:
+
+```bash
+docker run --privileged \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
+  -v /tmp:/tmp \
+  -v /run:/run \
+  -p 80:80 \
+  -p 18000:18000 \
+  -p 8000:8000 \
+  -d \
+  --name resilientdb-container \
+  --entrypoint /bin/bash \
+  resilientdb-ansible \
+  -c "while true; do sleep 30; done"
+```
+
+Then access the container and run the manual startup script:
+
+```bash
+# Access the container
+docker exec -it resilientdb-container /bin/bash
+
+# Run the complete startup script
+cat > /opt/resilientdb-ansible/complete-startup.sh << 'EOF'
+#!/bin/bash
+echo "Killing existing processes..."
+
+# Kill all existing services using pkill
+pkill -f kv_service 2>/dev/null || true
+pkill -f nginx 2>/dev/null || true
+pkill -f crow_service_main 2>/dev/null || true
+pkill -f crow-http 2>/dev/null || true
+pkill -f gunicorn 2>/dev/null || true
+pkill -f graphql 2>/dev/null || true
+
+echo "Starting services fresh..."
+
+# Start nginx
+nginx &
+echo "Nginx started"
+
+# Start ResilientDB KV services (nodes 1-4)
+/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node1.key.pri /opt/resilientdb/service/tools/data/cert/cert_1.cert &
+echo "ResilientDB KV Node 1 started"
+
+/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node2.key.pri /opt/resilientdb/service/tools/data/cert/cert_2.cert &
+echo "ResilientDB KV Node 2 started"
+
+/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node3.key.pri /opt/resilientdb/service/tools/data/cert/cert_3.cert &
+echo "ResilientDB KV Node 3 started"
+
+/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node4.key.pri /opt/resilientdb/service/tools/data/cert/cert_4.cert &
+echo "ResilientDB KV Node 4 started"
+
+# Start ResilientDB Client (node 5)
+/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node5.key.pri /opt/resilientdb/service/tools/data/cert/cert_5.cert &
+echo "ResilientDB Client (Node 5) started"
+
+# Start Crow HTTP service
+cd /opt/ResilientDB-GraphQL
+/opt/ResilientDB-GraphQL/bazel-bin/service/http_server/crow_service_main service/tools/config/interface/client.config service/http_server/server_config.config &
+echo "Crow HTTP service started"
+
+# Start GraphQL service
+cd /opt/ResilientDB-GraphQL
+export PATH="/opt/ResilientDB-GraphQL/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+/usr/bin/gunicorn -w 10 -b 0.0.0.0:8000 --pythonpath /opt/ResilientDB-GraphQL/venv/lib/python3.10/site-packages --timeout 120 app:app &
+echo "GraphQL service started"
+
+echo "All services started. Checking status..."
+sleep 10
+ps aux | grep -E "(kv_service|nginx|crow|gunicorn)"
+
+# Check if all required ports are listening
+echo "Checking ports..."
+netstat -tlnp | grep -E ":(80|8000|18000|10001|10002|10003|10004|10005)"
+
+# Keep the script running
+tail -f /dev/null
+EOF
+
+# Make it executable and run
+chmod +x /opt/resilientdb-ansible/complete-startup.sh
+/opt/resilientdb-ansible/complete-startup.sh
+```
+
+### Option 2: Direct Ansible Playbook
+
+For advanced users who want to run the Ansible playbook directly:
+
+```bash
+# Clone the repository
+git clone https://github.com/apache/incubator-resilientdb-ansible.git
+cd incubator-resilientdb-ansible
+
+# Install Ansible (if not already installed)
+sudo apt update && sudo apt install ansible
+
+# Run the playbook
+ansible-playbook site.yml -i inventories/production/hosts
+```
+
+---
+
+## 🏗️ Service Architecture
+
+The deployment includes:
+
+- **ResilientDB KV Cluster**: 4 nodes (ports 10001-10004) + 1 client (port 10005)
+- **Crow HTTP Server**: REST API (port 18000)
+- **GraphQL API**: GraphQL interface (port 8000)
+- **Nginx**: Reverse proxy (port 80)
+
+---
+
+## 🔗 API Endpoints
+
+### REST API (Crow HTTP)
+- **Commit Transaction**: `POST http://localhost:18000/v1/transactions/commit`
+- **Get Transaction**: `GET http://localhost:18000/v1/transactions/{id}`
+
+### GraphQL API
+- **GraphQL Endpoint**: `http://localhost:8000/graphql`
+
+### Via Nginx Proxy
+- **REST API**: `http://localhost/crow/`
+- **GraphQL API**: `http://localhost/graphql`
+
+---
+
+##  Testing the Setup
+
+```bash
+# Test REST API
+curl -X POST http://localhost:18000/v1/transactions/commit \
+  -H "Content-Type: application/json" \
+  -d '{"id": "test", "value": "data"}'
+
+# Test GraphQL API
+curl -X POST http://localhost:8000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ __schema { types { name } } }"}'
+```
+
+---
+
+##  Using Each Project After Installation
+
+Once you've installed the selected projects, check out the Ecosystem and Application tabs for more information:
+
+- [ResilientDB](https://resilientecosystem.github.io/resilientdb-quickstart/usage/resilientdb/)
+- [Python SDK](https://resilientecosystem.github.io/resilientdb-quickstart/usage/pythonsdk/)
+- [ResDB-ORM](https://resilientecosystem.github.io/resilientdb-quickstart/usage/resdborm/)
+- [Smart-Contracts-CLI](https://resilientecosystem.github.io/resilientdb-quickstart/usage/smart-contracts-cli/)
+- [Smart-Contracts-GraphQL](https://resilientecosystem.github.io/resilientdb-quickstart/usage/smart-contracts-graphql/)
+- [ResVault](https://resilientecosystem.github.io/resilientdb-quickstart/usage/resvault/)
+
+---
+
+## 🐛 Common Issues
+
+### "Connection refused" errors
+- Ensure all ResilientDB services are running (including the client on port 10005)
+- Check that ports are properly exposed in Docker run command
+
+### "Failed to connect to bus" errors
+- This indicates systemd issues - use the manual startup script instead
+- The manual approach bypasses systemd and starts services directly
+
+### Services not responding
+- Check if all processes are running: `ps aux | grep -E "(kv_service|nginx|crow|gunicorn)"`
+- Verify ports are listening: `netstat -tlnp | grep -E ":(80|8000|18000|10001|10002|10003|10004|10005)"`
+
+---
+
+## 📚 Additional Resources
+
+- **Official Repository**: [https://github.com/apache/incubator-resilientdb-ansible](https://github.com/apache/incubator-resilientdb-ansible)
+- **ResilientDB Documentation**: [https://resilientdb.incubator.apache.org/](https://resilientdb.incubator.apache.org/)
+- **Apache Incubator**: [https://incubator.apache.org/](https://incubator.apache.org/)
+
+---
+
+##  License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) file for details.
