@@ -16,6 +16,13 @@ KIND, either express or implied.  See the specific language
 governing permissions and limitations under the License.
 -->
 
+**DEPRECATION NOTICE**
+
+This repository is deprecated.
+Active development now continues in the [ResilientDB Monorepo](https://github.com/apache/incubator-resilientdb).
+
+The ResaultDB Ansible can be found at [ecosystem/deployment/ansible](https://github.com/apache/incubator-resilientdb/tree/master/ecosystem/deployment/ansible).
+
 # ResilientDB-Ansible
 
 Docker image to provision and run ResilientDB along with supporting services (GraphQL, Crow HTTP server, Nginx) using systemd and Ansible.
