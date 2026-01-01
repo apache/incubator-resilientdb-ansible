@@ -41,7 +41,7 @@ WORKDIR /opt/resilientdb-ansible
 RUN ansible-playbook site.yml -i inventories/production/hosts --tags all -e "bazel_jobs=1"
 
 # Fix MemoryDB bug: handle seq=0 as "get latest value" (consistent with LevelDB)
-# See: https://github.com/apache/incubator-resilientdb/issues/XXX
+# See: https://github.com/apache/incubator-resilientdb/issues/217
 RUN sed -i '/if (search_it != kv_map_with_seq_.end() && search_it->second.size()) {/a\    \/\/ When seq is 0, return the latest value (consistent with LevelDB behavior)\n    if (seq == 0) {\n      return search_it->second.back();\n    }' \
     /opt/resilientdb/chain/storage/memory_db.cpp
 
