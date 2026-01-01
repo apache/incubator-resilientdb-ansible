@@ -21,6 +21,35 @@
     dest: "{{ graphql_dir }}"
     version: main
 
+- name: Add nlohmann_json dependency to WORKSPACE (required by upstream ResilientDB)
+  shell: |
+    if ! grep -q 'name = "nlohmann_json"' "{{ graphql_dir }}/WORKSPACE"; then
+      cat >> "{{ graphql_dir }}/WORKSPACE" << 'NLOHMANN_EOF'
+
+    # Added by ansible - nlohmann_json dependency required by upstream ResilientDB
+    http_archive(
+        name = "nlohmann_json",
+        urls = ["https://github.com/nlohmann/json/archive/v3.9.1.tar.gz"],
+        sha256 = "4cf0df69731494668bdd6460ed8cb269b68de9c19ad8c27abc24cd72605b2d5b",
+        strip_prefix = "json-3.9.1",
+        build_file_content = """
+    licenses(["notice"])
+    package(default_visibility = ["//visibility:public"])
+    cc_library(
+        name = "json",
+        hdrs = ["single_include/nlohmann/json.hpp"],
+        strip_include_prefix = "single_include/",
+    )
+    """,
+    )
+    NLOHMANN_EOF
+      echo "Added nlohmann_json to WORKSPACE"
+    else
+      echo "nlohmann_json already in WORKSPACE"
+    fi
+  args:
+    executable: /bin/bash
+
 - name: Build Crow HTTP Server
   command: bazel build service/http_server:crow_service_main
   args:

@@ -40,9 +40,35 @@ WORKDIR /opt/resilientdb-ansible
 # Run the ansible playbook non-interactively (passwordless sudo)
 RUN ansible-playbook site.yml -i inventories/production/hosts --tags all -e "bazel_jobs=1"
 
-# Copy the startup script and unit file into the container
+# Fix MemoryDB bug: handle seq=0 as "get latest value" (consistent with LevelDB)
+# See: https://github.com/apache/incubator-resilientdb/issues/217
+RUN sed -i '/if (search_it != kv_map_with_seq_.end() && search_it->second.size()) {/a\    \/\/ When seq is 0, return the latest value (consistent with LevelDB behavior)\n    if (seq == 0) {\n      return search_it->second.back();\n    }' \
+    /opt/resilientdb/chain/storage/memory_db.cpp
+
+# Rebuild ResilientDB with the fix
+RUN cd /opt/resilientdb && \
+    bazel build //service/kv:kv_service //service/tools/kv/api_tools:kv_service_tools
+
+# Fix config files to use JSON format (required by newer ResilientDB)
+RUN echo '{"replica_info":[{"id":5,"ip":"127.0.0.1","port":10005}]}' > \
+    /opt/ResilientDB-GraphQL/service/tools/config/interface/client.config && \
+    echo '{"replica_info":[{"id":1,"ip":"127.0.0.1","port":10001},{"id":2,"ip":"127.0.0.1","port":10002},{"id":3,"ip":"127.0.0.1","port":10003},{"id":4,"ip":"127.0.0.1","port":10004}]}' > \
+    /opt/ResilientDB-GraphQL/service/http_server/server_config.config
+
+# Apply the same fix to ResilientDB-GraphQL's cached external dependency and rebuild Crow
+# Must use bazel clean to force rebuild after modifying cached external sources
+RUN CACHE_FILE=$(find /root/.cache/bazel -name 'memory_db.cpp' -path '*com_resdb_nexres*' 2>/dev/null | head -1) && \
+    if [ -n "$CACHE_FILE" ]; then \
+        sed -i '/if (search_it != kv_map_with_seq_.end() && search_it->second.size()) {/a\    if (seq == 0) {\n      return search_it->second.back();\n    }' "$CACHE_FILE"; \
+    fi && \
+    cd /opt/ResilientDB-GraphQL && \
+    bazel clean && \
+    bazel build //service/http_server:crow_service_main
+
+# Copy the startup scripts and make them executable
 COPY startup.sh /opt/resilientdb-ansible/startup.sh
-RUN chmod +x /opt/resilientdb-ansible/startup.sh
+COPY complete-startup.sh /opt/resilientdb-ansible/complete-startup.sh
+RUN chmod +x /opt/resilientdb-ansible/startup.sh /opt/resilientdb-ansible/complete-startup.sh
 
 # Copy the startup unit file and enable it
 COPY startup-services.service /etc/systemd/system/startup-services.service

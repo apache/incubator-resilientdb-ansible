@@ -1,55 +1,159 @@
 #!/bin/bash
-echo "Killing existing processes..."
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+# Complete startup script for ResilientDB services
+# Use this when running the container without systemd
 
-# Kill all existing services using pkill
-pkill -f kv_service 2>/dev/null || true
+set -e
+
+LOG_DIR="/var/log/resilientdb"
+mkdir -p "$LOG_DIR"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+wait_for_port() {
+    local port=$1
+    local timeout=${2:-30}
+    local start_time=$(date +%s)
+
+    while ! ss -tlnp | grep -q ":${port}"; do
+        if [ $(($(date +%s) - start_time)) -gt $timeout ]; then
+            log "ERROR: Timeout waiting for port $port"
+            return 1
+        fi
+        sleep 0.5
+    done
+    return 0
+}
+
+log "=== ResilientDB Complete Startup Script ==="
+
+# Kill all existing services
+log "Stopping existing services..."
+pkill -9 -f kv_service 2>/dev/null || true
+pkill -9 -f crow_service_main 2>/dev/null || true
+pkill -9 -f gunicorn 2>/dev/null || true
 pkill -f nginx 2>/dev/null || true
-pkill -f crow_service_main 2>/dev/null || true
-pkill -f crow-http 2>/dev/null || true
-pkill -f gunicorn 2>/dev/null || true
-pkill -f graphql 2>/dev/null || true
-
-echo "Starting services fresh..."
+sleep 2
 
 # Start nginx
-nginx &
-echo "Nginx started"
+log "Starting nginx..."
+nginx
+log "Nginx started"
 
-# Start ResilientDB KV services (nodes 1-4)
-/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node1.key.pri /opt/resilientdb/service/tools/data/cert/cert_1.cert &
-echo "ResilientDB KV Node 1 started"
+# Start ResilientDB KV replicas (nodes 1-4)
+# PBFT requires 3f+1 nodes, where f=1, so we need 4 replicas
+log "Starting PBFT replicas..."
 
-/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node2.key.pri /opt/resilientdb/service/tools/data/cert/cert_2.cert &
-echo "ResilientDB KV Node 2 started"
+for i in 1 2 3 4; do
+    /opt/resilientdb/bazel-bin/service/kv/kv_service \
+        /opt/resilientdb/service/tools/config/server/server.config \
+        /opt/resilientdb/service/tools/data/cert/node${i}.key.pri \
+        /opt/resilientdb/service/tools/data/cert/cert_${i}.cert \
+        > "$LOG_DIR/node${i}.log" 2>&1 &
+    log "  Node $i (replica) started - PID $!"
+done
 
-/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node3.key.pri /opt/resilientdb/service/tools/data/cert/cert_3.cert &
-echo "ResilientDB KV Node 3 started"
+# Wait for replicas to be ready
+log "Waiting for replicas to initialize..."
+sleep 3
 
-/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node4.key.pri /opt/resilientdb/service/tools/data/cert/cert_4.cert &
-echo "ResilientDB KV Node 4 started"
+for port in 10001 10002 10003 10004; do
+    if wait_for_port $port 10; then
+        log "  Port $port is ready"
+    else
+        log "  WARNING: Port $port not responding"
+    fi
+done
 
 # Start ResilientDB Client (node 5)
-/opt/resilientdb/bazel-bin/service/kv/kv_service /opt/resilientdb/service/tools/config/server/server.config /opt/resilientdb/service/tools/data/cert/node5.key.pri /opt/resilientdb/service/tools/data/cert/cert_5.cert &
-echo "ResilientDB Client (Node 5) started"
+log "Starting KV client (node 5)..."
+/opt/resilientdb/bazel-bin/service/kv/kv_service \
+    /opt/resilientdb/service/tools/config/server/server.config \
+    /opt/resilientdb/service/tools/data/cert/node5.key.pri \
+    /opt/resilientdb/service/tools/data/cert/cert_5.cert \
+    > "$LOG_DIR/node5.log" 2>&1 &
+log "  Node 5 (client) started - PID $!"
+
+if wait_for_port 10005 10; then
+    log "  Port 10005 is ready"
+else
+    log "  WARNING: Port 10005 not responding"
+fi
 
 # Start Crow HTTP service
+log "Starting Crow HTTP service..."
 cd /opt/ResilientDB-GraphQL
-/opt/ResilientDB-GraphQL/bazel-bin/service/http_server/crow_service_main service/tools/config/interface/client.config service/http_server/server_config.config &
-echo "Crow HTTP service started"
+./bazel-bin/service/http_server/crow_service_main \
+    service/tools/config/interface/client.config \
+    service/http_server/server_config.config \
+    > "$LOG_DIR/crow.log" 2>&1 &
+log "  Crow HTTP started - PID $!"
 
-# Start GraphQL service
+if wait_for_port 18000 10; then
+    log "  Port 18000 is ready"
+else
+    log "  WARNING: Port 18000 not responding"
+fi
+
+# Start GraphQL service (optional)
+log "Starting GraphQL service..."
 cd /opt/ResilientDB-GraphQL
-export PATH="/opt/ResilientDB-GraphQL/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-/usr/bin/gunicorn -w 10 -b 0.0.0.0:8000 --pythonpath /opt/ResilientDB-GraphQL/venv/lib/python3.10/site-packages --timeout 120 app:app &
-echo "GraphQL service started"
+export PATH="/opt/ResilientDB-GraphQL/venv/bin:$PATH"
+if [ -f "/opt/ResilientDB-GraphQL/app.py" ]; then
+    /usr/bin/gunicorn -w 4 -b 0.0.0.0:8000 \
+        --pythonpath /opt/ResilientDB-GraphQL/venv/lib/python3.10/site-packages \
+        --timeout 120 \
+        app:app \
+        > "$LOG_DIR/graphql.log" 2>&1 &
+    log "  GraphQL started - PID $!"
+else
+    log "  GraphQL app.py not found, skipping"
+fi
 
-echo "All services started. Checking status..."
-sleep 10
-ps aux | grep -E "(kv_service|nginx|crow|gunicorn)"
+# Final status check
+log ""
+log "=== Service Status ==="
+sleep 2
 
-# Check if all required ports are listening
-echo "Checking ports..."
-netstat -tlnp | grep -E ":(80|8000|18000|10001|10002|10003|10004|10005)"
+log "Running processes:"
+pgrep -a kv_service | while read line; do log "  $line"; done
+pgrep -a crow_service | while read line; do log "  $line"; done
+pgrep -a gunicorn | head -1 | while read line; do log "  $line"; done
 
-# Keep the script running
-tail -f /dev/null
+log ""
+log "Listening ports:"
+ss -tlnp | grep -E ":(80|8000|18000|1000[1-5])" | while read line; do log "  $line"; done
+
+log ""
+log "=== Startup Complete ==="
+log "Logs available in: $LOG_DIR"
+log ""
+log "API Endpoints:"
+log "  Crow HTTP API: http://localhost:18000/v1/transactions/"
+log "  GraphQL API:   http://localhost:8000/graphql"
+log ""
+
+# Keep running if called directly (for docker exec)
+if [ "${1:-}" = "--foreground" ]; then
+    log "Running in foreground mode. Press Ctrl+C to exit."
+    tail -f /dev/null
+fi

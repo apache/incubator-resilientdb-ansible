@@ -15,6 +15,18 @@
 # specific language governing permissions and limitations
 # under the License.
 ---
+- name: Create Crow client config (JSON format)
+  template:
+    src: client.config.j2
+    dest: "{{ graphql_dir }}/service/tools/config/interface/client.config"
+    force: yes
+
+- name: Create Crow server config (JSON format)
+  template:
+    src: server_config.config.j2
+    dest: "{{ graphql_dir }}/service/http_server/server_config.config"
+    force: yes
+
 - name: Create systemd service for Crow HTTP Server
   template:
     src: crow_service.service.j2
